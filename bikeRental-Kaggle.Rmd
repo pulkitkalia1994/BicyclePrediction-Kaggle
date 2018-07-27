@@ -1,0 +1,243 @@
+---
+title: "Bicycle prediction-Kaggle (XG Boost and model ensembling)"
+author: "Pulkit Kalia"
+date: "July 27, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## How I Scored 0.479 with this code using XGBoost and model ensembling
+
+### The below code is commented to make code sufficiently understandable
+
+```{r BikeRental}
+setwd("C:\\R-Programming\\Bike rental")
+train<-read.csv("train.csv")
+
+##Doing this to remove the outliers(this can be changed though to a lower value which might also increase the score)
+train<-subset(train,count<800)
+
+train$season<-as.factor(train$season)
+train$holiday<-as.factor(train$holiday)
+train$weather<-as.factor(train$weather)
+train$workingday<-as.factor(train$workingday)
+
+
+train$datetime<-as.character(train$datetime)
+model<-lm(count~.-datetime-casual-registered,data=train)
+summary(model)
+
+
+##Extracting date, month and hours component from the stringdate column
+month<-c()
+date<-c()
+hours<-c()
+
+train$datetime<-as.character(train$datetime)
+for(i in train$datetime){
+  strings<-strsplit(i," ")
+  dateString<-strsplit(strings[[1]][1],"-")
+  month<-c(month,dateString[[1]][2])
+  date<-c(date,dateString[[1]][3])
+  timeString<-strsplit(strings[[1]][2],":")
+  hours<-c(hours,timeString[[1]][1])
+}
+
+
+train$month<-as.factor((month))
+train$date<-as.numeric(date)
+train$hours<-as.numeric(hours)
+
+
+##To check if the day was weekend or not 
+library(lubridate)
+dayOfWeek<-wday(train$datetime)
+train$dayOfWeek<-as.factor(dayOfWeek)
+train$isWeekend<-ifelse(dayOfWeek %in% c(1,7),1,0)
+train$isWeekend<-as.factor(train$isWeekend)
+
+
+##breaking the hours into time periods
+train$categoryhours<-cut(train$hours,breaks = c(0,5,11,16,19,24),include.lowest = TRUE)
+levels(train$categoryhours)<-c("Night","Morning","Afternoon","Evening","Night")
+
+##breaking the humidity into levels
+train$humidityCategory<-cut(train$humidity,breaks = c(0,30,50,80,101),include.lowest = TRUE)
+levels(train$humidityCategory)<-c("Low","Mid","High","Very High")
+
+##breaking the wind speed into levels
+train$windspeedCategory<-cut(train$windspeed,breaks = c(0,7,20,30,60),include.lowest = TRUE)
+levels(train$windspeedCategory)<-c("Low","Mid","High","Very High")
+
+##cretaing new column if thetemperature was good or not on that day (values chosen by seeing the graph of distribution of temp Vs count)
+train$isTempGood<-as.factor(ifelse((train$temp<35 & train$temp>12),1,0))
+train$isaTempGood<-as.factor(ifelse((train$atemp<=35 & train$atemp>=17),1,0))
+
+train$date<-NULL
+
+##predicting casual column
+modelcasual<-lm(casual~.,data=train[,-c(1,11,12)])
+train$o1<-predict(modelcasual,train)
+
+##predicting registered column
+modelregistered<-lm(registered~.,data=train[,-c(1,10,12)])
+train$o2<-predict(modelregistered,train)
+
+##predicting count column
+modelcount<-lm(count~.,data=train[,-c(1,10,11)])
+train$o3<-predict(modelcount,train)
+
+
+
+library(dplyr)
+library("xgboost")
+library("Ckmeans.1d.dp")
+
+t<- train %>% mutate_if(is.factor,as.numeric)
+t$casual<-NULL
+t$registered<-NULL
+t$datetime<-NULL
+
+
+
+data_variables <- as.matrix(t[,-9])
+data_label <- t[,"count"]
+data_matrix <- xgb.DMatrix(data = data_variables, label = data_label)
+
+
+xgb_params <- list("objective" = "reg:linear",eta=0.05,gamma=0.9,max_depth=10,eval_metric="rmse")
+xgbcv <- xgb.cv( params = xgb_params, data = data_matrix, nrounds = 300, nfold = 10, showsd = T, stratified = T, print.every.n = 10, early.stop.round = 10, maximize = F)
+
+nround    <- xgbcv$best_iteration # number of XGBoost rounds
+cv.nfold  <- 5
+
+# Fit cv.nfold * cv.nround XGB models and save OOF predictions
+
+bst_model <- xgb.train(params = xgb_params,
+                       data = data_matrix,
+                       nrounds = nround)
+
+
+## Test data (same process done as on train data)
+test<-read.csv("test.csv")
+test$season<-as.factor(test$season)
+test$holiday<-as.factor(test$holiday)
+test$weather<-as.factor(test$weather)
+test$workingday<-as.factor(test$workingday)
+
+
+test$datetime<-as.character(test$datetime)
+
+
+month<-c()
+date<-c()
+hours<-c()
+
+test$datetime<-as.character(test$datetime)
+for(i in test$datetime){
+  strings<-strsplit(i," ")
+  dateString<-strsplit(strings[[1]][1],"-")
+  month<-c(month,dateString[[1]][2])
+  date<-c(date,dateString[[1]][3])
+  timeString<-strsplit(strings[[1]][2],":")
+  hours<-c(hours,timeString[[1]][1])
+}
+
+
+test$month<-as.factor((month))
+test$date<-as.numeric(date)
+test$hours<-as.numeric(hours)
+
+library(lubridate)
+dayOfWeek<-wday(test$datetime)
+test$dayOfWeek<-as.factor(dayOfWeek)
+test$isWeekend<-ifelse(dayOfWeek %in% c(1,7),1,0)
+test$isWeekend<-as.factor(test$isWeekend)
+
+
+test$categoryhours<-cut(test$hours,breaks = c(0,5,11,16,19,24),include.lowest = TRUE)
+levels(test$categoryhours)<-c("Night","Morning","Afternoon","Evening","Night")
+
+
+test$humidityCategory<-cut(test$humidity,breaks = c(0,30,50,80,101),include.lowest = TRUE)
+levels(test$humidityCategory)<-c("Low","Mid","High","Very High")
+
+test$windspeedCategory<-cut(test$windspeed,breaks = c(0,7,20,30,50),include.lowest = TRUE)
+levels(test$windspeedCategory)<-c("Low","Mid","High","Very High")
+
+test$isTempGood<-as.factor(ifelse((test$temp<35 & test$temp>12),1,0))
+test$isaTempGood<-as.factor(ifelse((test$atemp<=35 & test$atemp>=17),1,0))
+
+test$date<-NULL
+test$datetime<-NULL
+
+test$o1<-predict(modelcasual,test)
+
+test$o2<-predict(modelregistered,test)
+
+test$o3<-predict(modelcount,test)
+
+t<-test%>%mutate_if(is.factor,as.numeric)
+
+predictions<-predict(bst_model,as.matrix(t))
+predictions[predictions<0]<-0
+
+temp<-read.csv("test.csv")
+
+df<-data.frame(datetime=temp$datetime,count=predictions)
+
+write.csv(df,"output.csv",row.names = FALSE)
+
+
+
+```
+
+## Data Explorations :
+
+
+```{r, echo=FALSE}
+##Visualization
+library(ggplot2)
+g<-ggplot(train,aes(season))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(holiday))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(workingday))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(weather))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(month))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(hours))+geom_histogram(stat = "count")
+print(g)
+
+
+g<-ggplot(train,aes(dayOfWeek))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(isWeekend))+geom_histogram(stat = "count")
+print(g)
+
+g<-ggplot(train,aes(count,fill=humidityCategory))+geom_histogram(stat = "bin",bins=20)
+print(g)
+
+g<-ggplot(train,aes(count,fill=windspeedCategory))+geom_histogram(stat = "bin",bins=20)
+print(g)
+
+g<-ggplot(train,aes(count,fill=isTempGood))+geom_histogram(stat = "bin",bins=20)
+print(g)
+
+g<-ggplot(train,aes(count,fill=isaTempGood))+geom_histogram(stat = "bin",bins=20)
+print(g)
+```
+
+###Conclusion:
+0.479 was scored using this code! You can tune the XGB model more to get better tuning or engineer more factors/columns. 
